@@ -1,0 +1,6 @@
+curl_cffi==0.7.4
+python-dotenv==1.0.1
+xlsxwriter==3.2.9
+instagrapi>=2.1.0
+pyotp>=2.9.0
+pyinstaller>=6.0.0

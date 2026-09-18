@@ -1,0 +1,37 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# Build / packaging
+build/
+dist/
+*.zip
+*.rar
+
+# OS / junk
+.DS_Store
+__MACOSX/
+Thumbs.db
+
+# Secrets & runtime data (do not commit)
+proxies.txt
+proxies2.txt
+data/accounts.txt
+data/req.sh
+data/req.sh.bak
+data/sessions/
+data/tags/
+data/exports/
+data/run.log
+data/_worker_*
+logs/
+*.log
+
+# Local smoke / scratch
+data/smoke_*.txt
+data/pilot.txt
+data/proverka.txt
+data/sample_response.json

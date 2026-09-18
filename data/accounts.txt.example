@@ -1,0 +1,5 @@
+# username;password;2FA_SECRET;ip:port:proxyuser:proxypass
+# Пример:
+# myuser;mypass;ABCDEFGHIJKLMNOP;1.2.3.4:8080:proxyuser:proxypass
+#
+# Или dump-строка магазина — тогда прокси из proxies.txt по номеру строки.
