@@ -34,6 +34,22 @@ TAGS_DIR = DATA_DIR / "tags"
 EXPORTS_DIR = DATA_DIR / "exports"
 
 
+def resolve_proxies_file() -> Path:
+    """proxies.txt рядом с exe или в data/ — что реально заполнено."""
+    candidates = [BASE_DIR / "proxies.txt", DATA_DIR / "proxies.txt"]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#") and not s.startswith("//"):
+                    return path
+        except OSError:
+            continue
+    return PROXIES_FILE
+
+
 def ensure_layout() -> None:
     """Создаёт data/ и пустые конфиги при первом запуске exe."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -56,7 +72,17 @@ def ensure_layout() -> None:
         )
     if not PROXIES_FILE.exists():
         PROXIES_FILE.write_text(
-            "# host:port:user:pass — по одной строке на аккаунт (для dump-формата)\n",
+            "# host:port:user:pass — по одной строке на аккаунт (dump-формат)\n"
+            "# Также: login:password@ip:port или http://user:pass@host:port\n"
+            "# Обязательно, если Instagram заблокирован (РФ и др.): "
+            "весь трафик к IG идёт через эти прокси.\n",
+            encoding="utf-8",
+        )
+    data_proxies = DATA_DIR / "proxies.txt"
+    if not data_proxies.exists():
+        data_proxies.write_text(
+            "# альтернатива: можно держать прокси здесь вместо корневого proxies.txt\n"
+            "# host:port:user:pass\n",
             encoding="utf-8",
         )
 

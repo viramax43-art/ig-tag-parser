@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 from urllib.parse import quote
 
 from paths import ACCOUNTS_FILE as DEFAULT_ACCOUNTS
-from paths import PROXIES_FILE as DEFAULT_PROXIES
+from paths import resolve_proxies_file
 
 
 @dataclass
@@ -39,20 +39,79 @@ class Account:
 
     @property
     def proxy_host(self) -> str:
+        if not self.proxy_raw or ":" not in self.proxy_raw:
+            return "no-proxy"
         return self.proxy_raw.split(":", 1)[0]
 
     @property
     def proxy_url(self) -> str:
+        if not self.proxy_raw.strip():
+            return ""
         return proxy_to_url(self.proxy_raw)
 
     @property
     def label(self) -> str:
+        if not self.proxy_raw.strip():
+            return self.username
         return f"{self.username}@{self.proxy_host}"
+
+
+def _auth_at_host_to_raw(line: str) -> str:
+    """login:password@ip:port -> host:port:login:password"""
+    at = line.rfind("@")
+    if at <= 0:
+        raise ValueError(
+            f"неверный формат прокси (ожидалось login:pass@host:port): {line!r}"
+        )
+    creds, host_port = line[:at], line[at + 1 :]
+    if ":" not in creds or ":" not in host_port:
+        raise ValueError(f"неверный формат прокси: {line!r}")
+    user, password = creds.split(":", 1)
+    host, _, port = host_port.rpartition(":")
+    if not user or not host or not port.isdigit():
+        raise ValueError(f"неверный формат прокси: {line!r}")
+    return f"{host}:{port}:{user}:{password}"
+
+
+def _http_proxy_to_raw(url: str) -> str:
+    """http://user:pass@host:port -> host:port:user:pass"""
+    m = re.match(
+        r"^https?://([^:@]+):([^@]+)@([^:/]+):(\d+)/?$",
+        url.strip(),
+    )
+    if not m:
+        raise ValueError(f"не разобрать proxy URL: {url!r}")
+    user, password, host, port = m.groups()
+    return f"{host}:{port}:{user}:{password}"
+
+
+def normalize_proxy_raw(raw: str) -> str:
+    """
+    Приводит прокси к host:port[:user:pass].
+
+    Поддерживаемые форматы:
+      host:port:user:pass
+      host:port
+      login:password@ip:port
+      http://user:pass@host:port
+    """
+    line = raw.strip()
+    if not line:
+        raise ValueError("пустой прокси")
+    if line.startswith("http://") or line.startswith("https://"):
+        line = _http_proxy_to_raw(line)
+    elif "@" in line:
+        line = _auth_at_host_to_raw(line)
+    proxy_to_url(line)  # validate canonical form
+    return line
 
 
 def proxy_to_url(raw: str) -> str:
     """host:port:user:pass -> http://user:pass@host:port"""
-    parts = raw.split(":")
+    line = raw.strip()
+    if "@" in line or line.startswith("http://") or line.startswith("https://"):
+        line = normalize_proxy_raw(line)
+    parts = line.split(":")
     if len(parts) == 2:
         host, port = parts
         return f"http://{host}:{port}"
@@ -66,7 +125,7 @@ def proxy_to_url(raw: str) -> str:
 
 
 def load_proxy_lines(path: Path = None) -> List[str]:
-    path = path or DEFAULT_PROXIES
+    path = path or resolve_proxies_file()
     if not path.exists():
         return []
     out = []
@@ -74,25 +133,12 @@ def load_proxy_lines(path: Path = None) -> List[str]:
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("//"):
             continue
-        # http://user:pass@host:port → нормализуем в host:port:user:pass
-        if line.startswith("http://") or line.startswith("https://"):
-            out.append(_http_proxy_to_raw(line))
-        else:
-            proxy_to_url(line)  # validate
-            out.append(line)
+        try:
+            out.append(normalize_proxy_raw(line))
+        except ValueError as exc:
+            print(f"[!] proxies.txt: {exc}")
+            continue
     return out
-
-
-def _http_proxy_to_raw(url: str) -> str:
-    """http://user:pass@host:port -> host:port:user:pass"""
-    m = re.match(
-        r"^https?://([^:@]+):([^@]+)@([^:/]+):(\d+)/?$",
-        url.strip(),
-    )
-    if not m:
-        raise ValueError(f"не разобрать proxy URL: {url!r}")
-    user, password, host, port = m.groups()
-    return f"{host}:{port}:{user}:{password}"
 
 
 def _parse_cookie_tail(tail: str) -> tuple[Dict[str, str], str]:
@@ -122,6 +168,41 @@ def _extract_totp(third: str) -> str:
     return head
 
 
+# Dump: user:pass:TOTP|Instagram … — режем по началу следующего такого же блока.
+# Username начинается с буквы (не цепляем хвост JWT вроде …J9user…).
+_DUMP_ACCOUNT = re.compile(
+    r"([a-z][a-z0-9._]{2,29}):([^:\s|]{3,64}):([A-Z2-7]{16,64})"
+    r"\|Instagram\s.*?"
+    r"(?=(?:[a-z][a-z0-9._]{2,29}:[^:\s|]{3,64}:[A-Z2-7]{16,64}\|Instagram\s)|\Z)",
+    re.DOTALL,
+)
+
+
+def normalize_accounts_text(text: str) -> str:
+    """
+    Нормализует вставку аккаунтов: один аккаунт = одна строка.
+    Dump-формат часто приходит слитно без \\n — режем по user:pass:2FA|Instagram.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return ""
+
+    matches = list(_DUMP_ACCOUNT.finditer(text))
+    if matches:
+        prefix_lines = [
+            ln.strip()
+            for ln in text[: matches[0].start()].split("\n")
+            if ln.strip()
+            and (ln.strip().startswith("#") or ln.strip().startswith("//"))
+        ]
+        chunks = [m.group(0).strip() for m in matches if m.group(0).strip()]
+        lines = prefix_lines + chunks
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def parse_planned(line: str, line_no: int) -> Optional[Account]:
     """username;password;2fa;ip:port:user:pass"""
     parts = [p.strip() for p in line.split(";")]
@@ -130,11 +211,11 @@ def parse_planned(line: str, line_no: int) -> Optional[Account]:
     username, password, totp_secret, proxy_raw = parts
     if not all((username, password, totp_secret, proxy_raw)):
         return None
-    # Прокси обязан содержать ':' (host:port...), иначе это дамп.
-    if proxy_raw.count(":") < 1 or "=" in proxy_raw:
+    # Прокси обязан содержать ':' или '@', иначе это дамп.
+    if ("@" not in proxy_raw and proxy_raw.count(":") < 1) or "=" in proxy_raw:
         return None
     try:
-        proxy_to_url(proxy_raw)
+        proxy_raw = normalize_proxy_raw(proxy_raw)
     except ValueError:
         return None
     return Account(
@@ -213,7 +294,16 @@ def load_accounts(path: Path = None,
     accounts: List[Account] = []
     proxy_idx = 0
 
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    raw = path.read_text(encoding="utf-8")
+    normalized = normalize_accounts_text(raw)
+    # Перезапишем файл, если вставка была слипшейся — чтобы в UI тоже было по строкам.
+    if normalized and normalized != raw.replace("\r\n", "\n").replace("\r", "\n"):
+        try:
+            path.write_text(normalized, encoding="utf-8")
+        except Exception:
+            pass
+
+    for line_no, line in enumerate(normalized.splitlines(), 1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or stripped.startswith("//"):
             continue

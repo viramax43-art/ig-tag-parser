@@ -4,3 +4,7 @@ xlsxwriter==3.2.9
 instagrapi>=2.1.0
 pyotp>=2.9.0
 pyinstaller>=6.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pywebview>=5.0
+# sqlite3 is in the Python stdlib (used by src/state_db.py)

@@ -10,6 +10,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
+from queue import Empty, Queue
 from tkinter import filedialog, messagebox, ttk
 
 from paths import (
@@ -34,6 +35,8 @@ class GuiApp(tk.Tk):
         ensure_layout()
         self._worker: threading.Thread | None = None
         self._running = False
+        self._ui_queue: Queue = Queue()
+        self._poll_ui_queue()
 
         self._build()
         self._load_all()
@@ -112,13 +115,27 @@ class GuiApp(tk.Tk):
 
         self.retry_var = tk.BooleanVar(value=False)
         self.only_ru_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            opts, text="Добивать прерванные теги (RETRY_UNFINISHED)",
-            variable=self.retry_var,
+        self.max_accounts_var = tk.IntVar(value=1)
+        try:
+            from settings import load_settings
+            saved = load_settings()
+            self.max_accounts_var.set(saved.get("max_accounts", 1))
+            self.retry_var.set(bool(saved.get("retry_unfinished", False)))
+            self.only_ru_var.set(bool(saved.get("only_ru", True)))
+        except Exception:
+            pass
+        ttk.Label(opts, text="Одновременно аккаунтов:").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Spinbox(
+            opts, from_=1, to=999, width=6, textvariable=self.max_accounts_var,
+            command=self._save_runtime_settings,
         ).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Checkbutton(
-            opts, text="Excel только РУ (ONLY_RU)",
-            variable=self.only_ru_var,
+            opts, text="Добирать прерванные теги (RETRY_UNFINISHED)",
+            variable=self.retry_var, command=self._save_runtime_settings,
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Checkbutton(
+            opts, text="Excel (кнопка) только РУ",
+            variable=self.only_ru_var, command=self._save_runtime_settings,
         ).pack(side=tk.LEFT)
 
         btns = ttk.Frame(frame)
@@ -230,8 +247,34 @@ class GuiApp(tk.Tk):
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
+    def _save_runtime_settings(self) -> None:
+        try:
+            from settings import load_settings, save_settings
+            data = load_settings()
+            data.update({
+                "max_accounts": max(1, int(self.max_accounts_var.get())),
+                "retry_unfinished": bool(self.retry_var.get()),
+                "only_ru": bool(self.only_ru_var.get()),
+            })
+            save_settings(data)
+        except Exception as exc:
+            self._append_log(f"[!] настройки: {exc}")
+
+    def _poll_ui_queue(self) -> None:
+        try:
+            while True:
+                kind, value = self._ui_queue.get_nowait()
+                if kind == "log":
+                    self._append_log(value)
+                elif kind == "finished":
+                    self._run_finished()
+        except Empty:
+            pass
+        if self.winfo_exists():
+            self.after(100, self._poll_ui_queue)
+
     def _ui_log(self, msg: str) -> None:
-        self.after(0, lambda m=msg: self._append_log(m))
+        self._ui_queue.put(("log", msg))
 
     # ----- run / stop / export -----
 
@@ -256,10 +299,12 @@ class GuiApp(tk.Tk):
         self._append_log("СТАРТ СБОРА")
         self._append_log("=" * 50)
 
+        self._save_runtime_settings()
         env_extra = {}
         if self.retry_var.get():
             env_extra["RETRY_UNFINISHED"] = "1"
         env_extra["MAX_CONSECUTIVE_FAILURES"] = "10"
+        env_extra["MAX_WORKERS"] = str(max(1, int(self.max_accounts_var.get())))
 
         self._worker = threading.Thread(
             target=self._run_worker, args=(env_extra,), daemon=True
@@ -269,20 +314,22 @@ class GuiApp(tk.Tk):
     def _run_worker(self, env_extra: dict) -> None:
         import run_tags
 
-        # Подменяем log() → в окно.
+        # Keep log visible in the GUI window.
         def gui_log(msg: str, *, error: bool = False) -> None:
             self._ui_log(msg)
 
         run_tags.log = gui_log
         run_tags.reset_stop()
-        # GUI: probe в том же процессе, чтобы «Остановить» срабатывало сразу.
-        os.environ["IG_INPROCESS_PROBE"] = "1"
 
+        # Prefer child probe processes so stop/terminate is reliable and workers
+        # do not share probe module globals. Keep in-process only if already set.
         old_env = {k: os.environ.get(k) for k in env_extra}
+        old_inprocess = os.environ.get("IG_INPROCESS_PROBE")
         try:
+            os.environ.pop("IG_INPROCESS_PROBE", None)
             for k, v in env_extra.items():
                 os.environ[k] = v
-            # Перечитать флаги модуля из окружения.
+            run_tags.MAX_WORKERS = int(env_extra.get("MAX_WORKERS", "1"))
             run_tags.RETRY_UNFINISHED = os.getenv("RETRY_UNFINISHED") == "1"
             run_tags.MAX_CONSECUTIVE_FAILURES = int(
                 os.getenv("MAX_CONSECUTIVE_FAILURES", "3")
@@ -297,7 +344,11 @@ class GuiApp(tk.Tk):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
-            self.after(0, self._run_finished)
+            if old_inprocess is None:
+                os.environ.pop("IG_INPROCESS_PROBE", None)
+            else:
+                os.environ["IG_INPROCESS_PROBE"] = old_inprocess
+            self._ui_queue.put(("finished", None))
 
     def _run_finished(self) -> None:
         self._running = False
@@ -322,9 +373,11 @@ class GuiApp(tk.Tk):
         self._save_all()
         self._append_log("[i] выгрузка Excel…")
 
+        only_ru = bool(self.only_ru_var.get())
+
         def work() -> None:
             env = {**os.environ}
-            if self.only_ru_var.get():
+            if only_ru:
                 env["ONLY_RU"] = "1"
             else:
                 env.pop("ONLY_RU", None)
@@ -364,6 +417,8 @@ class GuiApp(tk.Tk):
             ):
                 return
             self._stop()
+            if self._worker is not None:
+                self._worker.join(timeout=8)
         self.destroy()
 
 

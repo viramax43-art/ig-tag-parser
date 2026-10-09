@@ -8,6 +8,7 @@ __pycache__/
 # Build / packaging
 build/
 dist/
+dist_alt/
 *.zip
 *.rar
 
@@ -35,3 +36,10 @@ data/smoke_*.txt
 data/pilot.txt
 data/proverka.txt
 data/sample_response.json
+data/parser.sqlite3
+data/parser.sqlite3-*
+data/settings.json
+
+# Frontend
+ui/node_modules/
+ui/dist/

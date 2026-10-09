@@ -1,8 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller: IG Tag Parser GUI."""
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
+ROOT = Path(SPECPATH)
 
 datas = []
 binaries = []
@@ -13,7 +16,11 @@ hiddenimports = [
     "curl_cffi",
     "instagrapi",
     "pydantic",
+    "fastapi",
+    "uvicorn",
+    "starlette",
     "gui_app",
+    "api_server",
     "run_tags",
     "probe",
     "accounts",
@@ -22,9 +29,17 @@ hiddenimports = [
     "refresh_tokens",
     "export_xlsx",
     "paths",
+    "state_db",
+    "proxy_pool",
+    "settings",
+    "webview",
 ]
 
-for pkg in ("curl_cffi", "instagrapi", "certifi"):
+ui_dist = ROOT / "ui" / "dist"
+if ui_dist.exists():
+    datas.append((str(ui_dist), "ui/dist"))
+
+for pkg in ("curl_cffi", "instagrapi", "certifi", "uvicorn", "webview"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -34,6 +49,11 @@ for pkg in ("curl_cffi", "instagrapi", "certifi"):
         pass
 
 hiddenimports += collect_submodules("instagrapi")
+hiddenimports += collect_submodules("uvicorn")
+try:
+    hiddenimports += collect_submodules("webview")
+except Exception:
+    pass
 
 a = Analysis(
     ["app.py"],

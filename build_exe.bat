@@ -4,20 +4,40 @@ cd /d "%~dp0"
 
 echo === IG Tag Parser: build exe ===
 
-if not exist "venv\Scripts\python.exe" (
+if exist "%~dp0venv\Scripts\python.exe" (
+  set "PY=%~dp0venv\Scripts\python.exe"
+) else if exist "%~dp0..\venv\Scripts\python.exe" (
+  set "PY=%~dp0..\venv\Scripts\python.exe"
+) else (
   echo Creating venv...
   py -3 -m venv venv
   if errorlevel 1 (
     echo ERROR: failed to create venv
     exit /b 1
   )
+  set "PY=%~dp0venv\Scripts\python.exe"
 )
 
-set "PY=%~dp0venv\Scripts\python.exe"
 if not exist "%PY%" (
   echo ERROR: venv python not found
   exit /b 1
 )
+
+echo Building React UI...
+pushd ui
+call npm install
+if errorlevel 1 (
+  echo ERROR: npm install failed
+  popd
+  exit /b 1
+)
+call npm run build
+if errorlevel 1 (
+  echo ERROR: UI build failed
+  popd
+  exit /b 1
+)
+popd
 
 echo Installing dependencies...
 "%PY%" -m pip install -q -U pip
